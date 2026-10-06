@@ -42,26 +42,139 @@ def dedupe(results):
     return out
 
 def find_people(results, company):
-    roles=re.compile(r'(diretor(?:a)?|head|gerente|superintendente|coordenador(?:a)?).{0,70}(auditoria|riscos|controles|compliance|governan|treinamento|desenvolvimento|recursos humanos|people|talentos)',re.I)
-    people=[]; seen=set()
-    for r in results:
-        txt=(r.get('title','')+' '+r.get('content','')).strip()
-        if not roles.search(txt): continue
-        title=r.get('title','').strip()
-        # Common public profile result patterns: Name - Role - Company | LinkedIn
-        parts=[p.strip() for p in re.split(r'\s[-–|]\s',title) if p.strip()]
-        name=parts[0] if parts else title[:80]
-        if len(name.split())<2 or len(name)>80: continue
-        role='Profissional relacionado à área'
-        m=roles.search(txt)
-        if m: role=m.group(0)[:120].strip(' -–|,.;')
-        k=(name.lower(),role.lower())
-        if k in seen: continue
-        seen.add(k)
-        people.append({'name':name,'role':role,'area':'Decisor potencial','priority':'ALTA' if re.search(r'diretor|head|superintendente',role,re.I) else 'MÉDIA','url':r.get('url'),'source':domain(r.get('url','')),'verified':True})
-        if len(people)>=5: break
-    return people
+    relevant_roles = re.compile(
+        r'(auditoria|audit|riscos|risk|controles internos|internal controls|'
+        r'compliance|governança|governance|treinamento|training|'
+        r'desenvolvimento|learning|recursos humanos|human resources|'
+        r'people|talentos|corporate university)',
+        re.I
+    )
 
+    seniority = re.compile(
+        r'(diretor(?:a)?|director|head|gerente|manager|'
+        r'superintendente|superintendent|coordenador(?:a)?|coordinator|'
+        r'chief|vp|vice president)',
+        re.I
+    )
+
+    people = []
+    seen = set()
+
+    for r in results:
+        url = (r.get('url') or '').strip()
+        title = (r.get('title') or '').strip()
+        content = (r.get('content') or '').strip()
+
+        # REGRA RÍGIDA:
+        # somente perfis pessoais públicos do LinkedIn
+        if not re.search(r'https?://([a-z]{2,3}\.)?linkedin\.com/in/', url, re.I):
+            continue
+
+        text = f'{title} {content}'
+
+        # precisa ter relação com uma área compradora da Crossover
+        if not relevant_roles.search(text):
+            continue
+
+        # prioriza cargos com poder de decisão/influência
+        if not seniority.search(text):
+            continue
+
+        # tenta extrair o nome do título do resultado
+        clean_title = re.sub(r'\s*\|\s*LinkedIn.*$', '', title, flags=re.I)
+        parts = [
+            p.strip()
+            for p in re.split(r'\s[-–—|]\s', clean_title)
+            if p.strip()
+        ]
+
+        if not parts:
+            continue
+
+        name = parts[0].strip()
+
+        # bloqueia documentos, relatórios e páginas que não sejam pessoas
+        forbidden = [
+            'relatório', 'report', 'estrutura', 'política',
+            'policy', 'ética', 'compliance e esg',
+            'por que', 'notícia', 'news', 'vagas',
+            'jobs', 'carreiras', 'careers'
+        ]
+
+        if any(word in name.lower() for word in forbidden):
+            continue
+
+        # nome precisa parecer nome de pessoa
+        words = name.split()
+        if len(words) < 2 or len(words) > 6:
+            continue
+
+        if len(name) > 80:
+            continue
+
+        # evita duplicidade
+        profile_key = url.lower().split('?')[0].rstrip('/')
+        if profile_key in seen:
+            continue
+
+        seen.add(profile_key)
+
+        role = 'Profissional relacionado à área'
+
+        if len(parts) >= 2:
+            role = parts[1][:140]
+
+        # se o segundo trecho não trouxer cargo, tenta extrair do conteúdo
+        if role == 'Profissional relacionado à área' or not relevant_roles.search(role):
+            m = re.search(
+                r'((?:diretor(?:a)?|director|head|gerente|manager|'
+                r'superintendente|superintendent|coordenador(?:a)?|coordinator|'
+                r'chief|vp|vice president).{0,100}'
+                r'(?:auditoria|audit|riscos|risk|controles|compliance|'
+                r'governança|governance|treinamento|training|'
+                r'desenvolvimento|learning|recursos humanos|people|talentos))',
+                text,
+                re.I
+            )
+            if m:
+                role = m.group(1).strip(' -–—|,.;')[:140]
+
+        priority = (
+            'ALTA'
+            if re.search(
+                r'diretor|director|head|superintendente|chief|vp|vice president',
+                role,
+                re.I
+            )
+            else 'MÉDIA'
+        )
+
+        area = 'Decisor técnico'
+
+        if re.search(
+            r'treinamento|training|desenvolvimento|learning|'
+            r'recursos humanos|human resources|people|talentos',
+            text,
+            re.I
+        ):
+            area = 'RH / T&D / People'
+
+        people.append({
+            'name': name,
+            'role': role,
+            'area': area,
+            'company': company,
+            'priority': priority,
+            'url': url,
+            'source': 'LinkedIn',
+            'verified': True
+        })
+
+        if len(people) >= 6:
+            break
+
+    return people
+      
 def solution_from_text(text):
     scores={'CICS':0,'ABR':0,'ERM':0}
     for w in ['controle interno','controles internos','compliance','governança']: scores['CICS'] += text.lower().count(w)*2
@@ -91,7 +204,9 @@ def analyze():
       f'{base} vagas auditoria riscos controles internos compliance governança 2026',
       f'{base} nova liderança diretor head auditoria riscos compliance controles 2026',
       f'{base} expansão aquisição reestruturação governança riscos relatório anual 2026',
-      f'site:linkedin.com/in "{company}" (auditoria OR riscos OR "controles internos" OR compliance OR "treinamento e desenvolvimento")'
+      f'site:linkedin.com/in "{company}" ("auditoria interna" OR auditoria OR audit OR riscos OR risk OR "controles internos" OR compliance OR governança)',
+    f'site:linkedin.com/in "{company}" (head OR diretor OR director OR gerente OR manager OR superintendente) (auditoria OR riscos OR compliance OR controles)',
+    f'site:linkedin.com/in "{company}" ("recursos humanos" OR "treinamento e desenvolvimento" OR "learning and development" OR "people" OR "corporate university")',
     ]
     packs=[]
     for q in queries:
