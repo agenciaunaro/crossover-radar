@@ -1,9 +1,19 @@
 import os, re, json, requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from urllib.parse import urlparse
 
 app = Flask(__name__)
 TAVILY_URL = 'https://api.tavily.com/search'
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+@app.route('/')
+def home():
+    return send_from_directory(ROOT_DIR, 'index.html')
+
+@app.route('/logo.png')
+def logo():
+    return send_from_directory(ROOT_DIR, 'logo.png')
 
 SIGNALS = [
  ('lideranca','Nova liderança em Auditoria, Riscos, Controles, Compliance ou Governança',3,['nova liderança','assumiu','nomeado','nomeada','diretor','diretora','head','superintendente']),
